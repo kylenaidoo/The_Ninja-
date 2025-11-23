@@ -22,14 +22,11 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD", "npg_3Ec9qVGNgAvP")
 
 # Locations & Settings
 locations = {
-    "Gauteng": {"city": "City of Johannesburg", "geoId": "101069296"},
-    "Sandton": {"city": "Sandton", "geoId": "101069300"},
-    "Midrand": {"city": "Midrand", "geoId": "101069305"},
-    "Randburg": {"city": "Randburg", "geoId": "101069310"}
+    "Gauteng": {"city": "City of Johannesburg", "geoId": "101069296"}
 }
 
 allowed_locations = ["Johannesburg", "Gauteng", "Sandton", "Midrand", "Randburg", "Remote"]
-MAX_JOBS_PER_LOCATION = 20
+MAX_JOBS_PER_LOCATION = 5  # Reduced for testing
 
 # Logging setup
 logging.basicConfig(
@@ -146,15 +143,26 @@ def scrape_location_jobs(driver, city, geoId):
 
     logging.info(f"Opening LinkedIn jobs URL for {city}: {url}")
     driver.get(url)
-    time.sleep(5)  # Increased wait time
+    time.sleep(5)
     close_signin_popup(driver)
 
-    # DEBUG: Save page source to see what we're getting
+    # DEBUG: Save the actual page content to see what we're getting
     page_source = driver.page_source
-    if "signin" in page_source.lower():
-        logging.warning("Page might be showing sign-in required")
     
+    # Check if we're getting a sign-in page or blocked
+    if "sign in" in page_source.lower():
+        logging.error("🚨 DETECTED SIGN-IN PAGE - LinkedIn is blocking us!")
+    if "robot" in page_source.lower() or "captcha" in page_source.lower():
+        logging.error("🚨 DETECTED BOT/BLOCK PAGE - LinkedIn is blocking automation!")
+    
+    # Save page title and first 1000 chars for debugging
     soup = BeautifulSoup(page_source, "html.parser")
+    page_title = soup.find("title")
+    logging.info(f"📄 PAGE TITLE: {page_title.get_text() if page_title else 'NO TITLE FOUND'}")
+    
+    # Log the actual page content for debugging
+    page_preview = page_source[:1000] if len(page_source) > 1000 else page_source
+    logging.info(f"🔍 PAGE CONTENT PREVIEW: {page_preview}")
     
     # Try multiple selectors for job cards
     selectors = [
@@ -162,27 +170,29 @@ def scrape_location_jobs(driver, city, geoId):
         "li.jobs-search-results__list-item", 
         "div.job-search-card",
         "div.occludable-update",
-        "[data-entity-urn*='jobPosting']"
+        "[data-entity-urn*='jobPosting']",
+        ".job-card-container",
+        ".jobs-search-results__list-item"
     ]
     
     jobs = []
     for selector in selectors:
         found_jobs = soup.select(selector)
         if found_jobs:
-            logging.info(f"Found {len(found_jobs)} jobs with selector: {selector}")
-            jobs.extend(found_jobs)
+            logging.info(f"✅ Found {len(found_jobs)} jobs with selector: {selector}")
+            jobs = found_jobs
             break
+        else:
+            logging.info(f"❌ No jobs with selector: {selector}")
     
-    # If still no jobs, log the page title and some content for debugging
     if not jobs:
-        page_title = soup.find("title")
-        logging.warning(f"No jobs found. Page title: {page_title.get_text() if page_title else 'No title'}")
+        logging.error("❌ NO JOB CARDS FOUND WITH ANY SELECTOR!")
+        # Try to find ANY divs with job-related classes
+        all_divs = soup.find_all('div', class_=True)
+        job_related_divs = [div for div in all_divs if any(word in div.get('class', []) for word in ['job', 'card', 'list', 'result'])]
+        logging.info(f"🔍 Found {len(job_related_divs)} potentially job-related divs")
         
-        # Log first 500 chars of page to see what we're getting
-        preview = page_source[:500]
-        logging.warning(f"Page preview: {preview}")
-
-    logging.info(f"Total job cards found for {city}: {len(jobs)}")
+    logging.info(f"📊 Total job cards found for {city}: {len(jobs)}")
 
     extracted = []
 
@@ -190,79 +200,19 @@ def scrape_location_jobs(driver, city, geoId):
         try:
             # Try multiple selectors for job title
             title = "N/A"
-            for selector in ["h3", "h3.base-search-card__title", ".job-card-list__title"]:
+            for selector in ["h3", "h3.base-search-card__title", ".job-card-list__title", ".job-card-search__title"]:
                 title_tag = job.select_one(selector)
                 if title_tag and title_tag.get_text(strip=True):
                     title = title_tag.get_text(strip=True)
                     break
 
             if title == "N/A":
+                logging.warning(f"Job #{index}: No title found")
                 continue
 
-            # Try multiple selectors for company
-            company = "N/A"
-            for selector in ["h4", "h4.base-search-card__subtitle", ".job-card-container__company-name"]:
-                company_tag = job.select_one(selector)
-                if company_tag and company_tag.get_text(strip=True):
-                    company = company_tag.get_text(strip=True)
-                    break
-
-            # Try multiple selectors for location
-            location_text = city
-            for selector in [".base-search-card__metadata span", ".job-card-container__metadata-item"]:
-                location_tag = job.select_one(selector)
-                if location_tag and location_tag.get_text(strip=True):
-                    location_text = location_tag.get_text(strip=True)
-                    break
-
-            if not any(loc.lower() in location_text.lower() for loc in allowed_locations):
-                logging.info(f"Skipping job '{title}' in '{location_text}' (outside target locations)")
-                continue
-
-            # Try multiple selectors for job link
-            job_link = None
-            for selector in ["a.base-card__full-link", "a.job-card-container__link"]:
-                job_link_tag = job.select_one(selector)
-                if job_link_tag and job_link_tag.get("href"):
-                    job_link = job_link_tag["href"]
-                    break
-
-            if not job_link:
-                continue
-
-            # Make sure it's a full URL
-            if job_link.startswith("/"):
-                job_link = "https://www.linkedin.com" + job_link
-
-            logging.info(f"Processing job #{index}: {title} at {company}")
-            driver.get(job_link)
-            time.sleep(3)
-            close_signin_popup(driver)
-
-            jd_soup = BeautifulSoup(driver.page_source, "html.parser")
-            description_tag = jd_soup.select_one(".jobs-description__content, .show-more-less-html__markup")
-            description = description_tag.get_text(" ", strip=True) if description_tag else "N/A"
-
-            emails, phones = extract_contact_details(description)
-
-            easy_apply = None
-            if jd_soup.find("button", string=lambda t: t and "Easy Apply" in t):
-                easy_apply = job_link
-
-            job_data = {
-                "title": title,
-                "company": company,
-                "location": location_text,
-                "apply_link": job_link,
-                "easy_apply": easy_apply,
-                "description": description,
-                "contacts": {"emails": emails, "phones": phones}
-            }
+            logging.info(f"🎯 Processing job #{index}: {title}")
+            extracted.append({"title": title, "company": "TEST", "location": city, "apply_link": "TEST"})
             
-            if save_job_to_db(job_data):
-                extracted.append(job_data)
-                logging.info(f"Job #{index} saved successfully: {title}")
-
         except Exception as e:
             logging.error(f"Error scraping job #{index}: {e}")
             continue
@@ -278,12 +228,13 @@ def main():
         driver = setup_driver()
         all_results = []
         
-        for loc, info in locations.items():
+        # Test with just ONE location for debugging
+        for loc, info in list(locations.items())[:1]:
             jobs = scrape_location_jobs(driver, info["city"], info["geoId"])
             all_results.extend(jobs)
             logging.info(f"Completed {loc}: {len(jobs)} jobs")
         
-        logging.info(f"=== FINISHED: {len(all_results)} total jobs saved ===")
+        logging.info(f"=== FINISHED: {len(all_results)} total jobs found ===")
         
     except Exception as e:
         logging.error(f"Scraper failed: {e}")
