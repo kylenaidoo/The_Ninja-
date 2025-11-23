@@ -105,8 +105,9 @@ def setup_driver():
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--headless=new")
-    
+    # REMOVED headless to match your working local script
+    # options.add_argument("--headless=new")
+
     # Use manually installed ChromeDriver
     service = Service("/usr/local/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
@@ -117,6 +118,20 @@ def close_signin_popup(driver):
         body = driver.find_element(By.TAG_NAME, "body")
         body.send_keys(Keys.ESCAPE)
         time.sleep(1)
+        logging.info("Sent ESC to close popup")
+    except Exception:
+        pass
+
+    try:
+        close_buttons = driver.find_elements(By.XPATH, "//button[contains(@class,'artdeco-modal__dismiss')]")
+        for btn in close_buttons:
+            try:
+                btn.click()
+                logging.info("Clicked popup X button")
+                time.sleep(1)
+                break
+            except:
+                continue
     except Exception:
         pass
 
@@ -129,38 +144,99 @@ def scrape_location_jobs(driver, city, geoId):
     base_url = "https://www.linkedin.com/jobs/search?"
     url = f"{base_url}keywords=&location={quote(city)}&geoId={geoId}&f_TPR=r86400&position=1&pageNum=0"
 
-    logging.info(f"Scraping jobs for {city}")
+    logging.info(f"Opening LinkedIn jobs URL for {city}: {url}")
     driver.get(url)
-    time.sleep(3)
+    time.sleep(5)  # Increased wait time
     close_signin_popup(driver)
 
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    jobs = soup.select("div.base-card")
-    logging.info(f"Found {len(jobs)} job cards for {city}")
+    # DEBUG: Save page source to see what we're getting
+    page_source = driver.page_source
+    if "signin" in page_source.lower():
+        logging.warning("Page might be showing sign-in required")
+    
+    soup = BeautifulSoup(page_source, "html.parser")
+    
+    # Try multiple selectors for job cards
+    selectors = [
+        "div.base-card",
+        "li.jobs-search-results__list-item", 
+        "div.job-search-card",
+        "div.occludable-update",
+        "[data-entity-urn*='jobPosting']"
+    ]
+    
+    jobs = []
+    for selector in selectors:
+        found_jobs = soup.select(selector)
+        if found_jobs:
+            logging.info(f"Found {len(found_jobs)} jobs with selector: {selector}")
+            jobs.extend(found_jobs)
+            break
+    
+    # If still no jobs, log the page title and some content for debugging
+    if not jobs:
+        page_title = soup.find("title")
+        logging.warning(f"No jobs found. Page title: {page_title.get_text() if page_title else 'No title'}")
+        
+        # Log first 500 chars of page to see what we're getting
+        preview = page_source[:500]
+        logging.warning(f"Page preview: {preview}")
+
+    logging.info(f"Total job cards found for {city}: {len(jobs)}")
 
     extracted = []
 
     for index, job in enumerate(jobs[:MAX_JOBS_PER_LOCATION], 1):
         try:
-            title_tag = job.select_one("h3")
-            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            # Try multiple selectors for job title
+            title = "N/A"
+            for selector in ["h3", "h3.base-search-card__title", ".job-card-list__title"]:
+                title_tag = job.select_one(selector)
+                if title_tag and title_tag.get_text(strip=True):
+                    title = title_tag.get_text(strip=True)
+                    break
 
-            company_tag = job.select_one("h4")
-            company = company_tag.get_text(strip=True) if company_tag else "N/A"
-
-            location_tag = job.select_one(".base-search-card__metadata span")
-            location_text = location_tag.get_text(strip=True) if location_tag else city
-
-            if not any(loc.lower() in location_text.lower() for loc in allowed_locations):
+            if title == "N/A":
                 continue
 
-            job_link_tag = job.select_one("a.base-card__full-link")
-            job_link = job_link_tag["href"] if job_link_tag else None
+            # Try multiple selectors for company
+            company = "N/A"
+            for selector in ["h4", "h4.base-search-card__subtitle", ".job-card-container__company-name"]:
+                company_tag = job.select_one(selector)
+                if company_tag and company_tag.get_text(strip=True):
+                    company = company_tag.get_text(strip=True)
+                    break
+
+            # Try multiple selectors for location
+            location_text = city
+            for selector in [".base-search-card__metadata span", ".job-card-container__metadata-item"]:
+                location_tag = job.select_one(selector)
+                if location_tag and location_tag.get_text(strip=True):
+                    location_text = location_tag.get_text(strip=True)
+                    break
+
+            if not any(loc.lower() in location_text.lower() for loc in allowed_locations):
+                logging.info(f"Skipping job '{title}' in '{location_text}' (outside target locations)")
+                continue
+
+            # Try multiple selectors for job link
+            job_link = None
+            for selector in ["a.base-card__full-link", "a.job-card-container__link"]:
+                job_link_tag = job.select_one(selector)
+                if job_link_tag and job_link_tag.get("href"):
+                    job_link = job_link_tag["href"]
+                    break
+
             if not job_link:
                 continue
 
+            # Make sure it's a full URL
+            if job_link.startswith("/"):
+                job_link = "https://www.linkedin.com" + job_link
+
+            logging.info(f"Processing job #{index}: {title} at {company}")
             driver.get(job_link)
-            time.sleep(2)
+            time.sleep(3)
             close_signin_popup(driver)
 
             jd_soup = BeautifulSoup(driver.page_source, "html.parser")
@@ -185,7 +261,7 @@ def scrape_location_jobs(driver, city, geoId):
             
             if save_job_to_db(job_data):
                 extracted.append(job_data)
-                logging.info(f"Job #{index} saved: {title}")
+                logging.info(f"Job #{index} saved successfully: {title}")
 
         except Exception as e:
             logging.error(f"Error scraping job #{index}: {e}")
