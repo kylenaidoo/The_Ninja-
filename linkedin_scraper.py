@@ -12,7 +12,6 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
 
 # Database configuration
 DB_HOST = os.environ.get("DB_HOST", "ep-empty-scene-a4hzohhu.us-east-1.pg.koyeb.app")
@@ -108,10 +107,9 @@ def setup_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--headless=new")
     
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()), 
-        options=options
-    )
+    # Use manually installed ChromeDriver
+    service = Service("/usr/local/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=options)
     return driver
 
 def close_signin_popup(driver):
