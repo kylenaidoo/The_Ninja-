@@ -1,6 +1,5 @@
 selenium==4.15.0
 beautifulsoup4==4.12.2
 fake-useragent==1.4.0
-webdriver-manager==4.0.1
 psycopg2-binary==2.9.8
 urllib3==1.26.18
