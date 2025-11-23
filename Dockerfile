@@ -1,10 +1,16 @@
 FROM python:3.11-slim
 
-# Install Chrome (updated method without apt-key)
-RUN apt-get update && apt-get install -y wget gnupg
+# Install Chrome and ChromeDriver
+RUN apt-get update && apt-get install -y wget gnupg unzip
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub > /usr/share/keyrings/google-chrome-keyring.gpg
 RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list
 RUN apt-get update && apt-get install -y google-chrome-stable
+
+# Install ChromeDriver manually (compatible version)
+RUN wget -q -O /tmp/chromedriver.zip https://storage.googleapis.com/chrome-for-testing-public/120.0.6099.109/linux64/chromedriver-linux64.zip
+RUN unzip /tmp/chromedriver.zip -d /tmp/
+RUN mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/
+RUN chmod +x /usr/local/bin/chromedriver
 
 WORKDIR /app
 COPY . .
